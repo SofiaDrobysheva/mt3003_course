@@ -1,0 +1,413 @@
+---
+title: "Fika Factory data analysis"
+subtitle: "Investigation of the cookie dissolving time"
+author: "Sofia Drobysheva"
+date: "12/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+library(httr)
+library(kableExtra)
+library(scales)
+library(lubridate)
+library(ggrepel)
+library(tidyverse)
+library(ggpubr)
+library(janitor)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+library(stringr)
+library(snakecase)
+```
+
+
+```{r}
+#setting a default theme for the plots
+theme_set(
+  theme_pubr() +
+    theme(legend.position = "right"))
+```
+
+## Background info 
+
+This report includes analysis of the data that comes from an **imaginary** Fika Factory. The factory produces several types of cookies: chocolate, oat and cherry. The chocolate cookies are the main focus of the company.  
+
+Cookies are produced in batches. Before the the batch can be sold it must pass the quality control test. The test is the following: several cookies are selected and their average dissolving time in a glass of milk is measured. The idea behind it is to make sure that cookies do not dissolve too quickly. If the average dissolving time is more than 4 seconds then the batch is declared as **GOOD**. If the dissolving time is on average less than 4 seconds, then the batch is a **FAIL** and cannot be sold. 
+
+## Purpose of the analysis 
+
+Recently cookies were seen to dissolve too quickly. Thus, a data analyst was hired to investigate the data and understand **what** may cause a shift in the dissolving time of the cookies. 
+
+We will test two hypothesis: 
+
+1. Cookie dissolving time in milk is not affected by whom the cookies are made. 
+
+2. Cookie dissolving time in milk is not affected by the local temperature. 
+
+
+## The dataset 
+
+Before we start diving deeper into the data, lets look at what we know: 
+
+1. Factory employs two bakers: Tom Hoffman and Bob Fredrikson.
+
+2. Several dissolving tests are made. Dissolving in milk, in water, juice, coffee and tea. The most important parameter for the company is: dissolving in milk.  
+
+3. The factory sells three types of cookies:  chocolate (majority), oat and dried-cherry. 
+
+4. A TEST chocolate cookie batch was requested for this analysis. This was done to have a thick-dough reference batch. 
+
+The main Fika Factory dataset is presented in the table below: 
+
+```{r}
+fika <- read_csv("data/factory_data.csv") %>% 
+  janitor::clean_names()
+```
+
+
+```{r}
+kable(fika, "html", caption = "The main dataset") %>%
+  kable_styling("striped") %>% 
+  scroll_box(width = "100%",  height = "300px")
+```
+
+
+```{r, include=FALSE}
+fika_person_summary <- fika %>% 
+  group_by(cookie_made_by) %>% 
+  summarize()
+
+kable(fika_person_summary, "html")  # a-ha! we see that Tom Hoffman is spelled differently and we want to fix it
+```
+
+```{r}
+# Formatting the dataset
+
+fika_long <- fika %>% pivot_longer(cols = c(water, 
+                                            juice, 
+                                            coffee, 
+                                            tea, 
+                                            milk), 
+               names_to = "dissolving_in", 
+               values_to = "time") %>% 
+  mutate(date = dmy(test_date), 
+         cookie_made_by = sub("\\(.*\\)", "H", cookie_made_by), # fixing the different spellin of the name Tom Hoffman 
+         cookie_made_by = to_snake_case(cookie_made_by)) %>% 
+  select(-test_date)
+```
+
+One of our hypothesis is that the dissolving time is affected by the local temperature. Thus, we import local temperature data from SMHI. Fika Factory is located in Lund and we thus use station number *53430*. We import daily average measurements, indicated by the *parameter 2*. However, Lund station has only data available for last four months. That is why we indicate the period to be *latest-months* instead of *corrected-archive*.
+
+```{r}
+# Bring the Lund weather dataset 
+
+gotten_url <- GET("https://opendata-download-metobs.smhi.se/api/version/latest/parameter/2/station/53430/period/latest-months/data.json")
+
+api_body <- httr::content(gotten_url, as = "text") %>% 
+  jsonlite::fromJSON() 
+
+value_df <- api_body$value # value - is one of the sub-df where datetime and temperature are stored
+
+lund_weather_df <- value_df %>% 
+  mutate(date = lubridate::ymd(ref), # format chr to date data type
+         temperature = value) %>% 
+  select(date, temperature) # keeping only relevant columns
+
+kable(lund_weather_df, "html", caption = "Temperature in Lund for the last 4 moths, daily average.") %>%
+  kable_styling("striped") %>% 
+  scroll_box(width = "100%",  height = "200px")
+```
+
+
+## Plotting the data
+
+
+```{r}
+# Preparing datasets that will be plotted in the later steps
+
+# dissolving mean time, in milk, for ALL batches
+
+fika_mean_all <- fika_long %>% 
+  filter(batch_id != "Test", # we filter out the test batch because it is a special case
+         stats == "Mean", 
+         dissolving_in == "milk")
+
+
+# pinch-off data for Choco-cookie batches only
+
+fika_mean_cc <- fika_long %>% 
+  filter(batch_id != "Test", 
+         stats == "Mean", 
+         dissolving_in == "milk", 
+         cookie_type == "Choco-cookie")
+
+
+# dissolving mean time, in milk, for all chocolate cookie batches, performed by Tom only
+
+fika_mean_cc_tom <- fika_long %>% 
+  filter(batch_id != "Test", 
+         stats == c("Mean"), 
+         dissolving_in == "milk", 
+         cookie_made_by == "tom_h", 
+         cookie_type == "Choco-cookie")
+
+#  dissolving mean time, in milk, for all chocolate cookie batches, performed by Bob only
+
+fika_mean_cc_bob <- fika_long %>% 
+  filter(stats == "Mean",
+         batch_id != "Test",
+         dissolving_in == "milk", 
+         cookie_made_by == "bob_f", 
+         cookie_type == "Choco-cookie")
+
+
+# Data only for the chocolate TEST batch
+test_cook_mean <- fika_long %>% 
+  filter(batch_id == "Test", 
+         stats == "Mean", 
+         dissolving_in == "milk")
+```
+
+
+#### Overview
+
+The plot below represents means of the dissolving time in milk across batches. We see that there is a difference in dissolving time between the bakers (orange trend lines). It seems that Bob's cookies are dissolving quicker. 
+
+Notice, that the TEST cookie, shown as a big brown dot in the upper right part of the plot, has a larger dissolving mean. That is expected because we asked to make those cookies out of a thicker dough.  
+
+```{r}
+# Means for the dissolving time in milk, for ALL batches
+
+ggplot(data = fika_mean_all, 
+       mapping = aes(x = date, 
+                     y = time)) + 
+  geom_point(aes(color = cookie_made_by, 
+                 shape = cookie_type)) + 
+  geom_point(data = test_cook_mean, 
+             mapping = aes(x = date, 
+                           y = time),
+             shape = 21, 
+             colour = "darkred", 
+             fill = "chocolate", 
+             size = 2.5, 
+             stroke = 1) +
+  geom_smooth(method = lm,
+              aes(group = cookie_made_by), 
+              se = FALSE,
+              color = "orange") + 
+  labs(x = NULL, 
+       y = "time, sec", 
+       title = "Dissolving mean across all batches", 
+       color = "Timing performed by", 
+       shape = "cookie type") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_text_repel(aes(label = batch_id), 
+                  size = 3) + 
+  scale_x_date(date_breaks = "10 week", 
+               date_labels = "%b %y") + 
+  scale_shape_manual(breaks = c("Choco-cookie", "Oat", "Cherry"), 
+                     values = c(19, 17, 8)) + 
+  scale_color_manual(breaks = c("tom_h", 
+                                "bob_f"),
+                        values=c("plum3", 
+                                 "green")) +
+  geom_hline(yintercept=4, 
+             color = "black")
+  
+```
+
+
+#### Different bakers
+
+Now lets look closer into the difference between the cookies made by Tom and Bob. 
+
+
+```{r tom, figures-side, fig.show="hold", out.width="50%"}
+ggplot(data = fika_mean_cc_tom, 
+       mapping = aes(x = time)) + 
+  geom_histogram(color="darkred", 
+                 fill="chocolate") +
+  labs(x = "Time, in sec", 
+       y = NULL, title = "Dissolving means of Choco-cookie batches", 
+       caption = "* performed by Tom Hoffman", 
+       size = NULL) +
+  geom_point(data = test_cook_mean, 
+             mapping = aes(x = test_cook_mean$time, y = 0), 
+             shape = 21, 
+             colour = "darkred", 
+             fill = "chocolate", 
+             size = 5, 
+             stroke = 1.5) +
+  annotate("text", 
+           x = test_cook_mean$time, 
+           y = 0.2, 
+           label = "Test choco cookie", fontface="italic") +
+  theme(legend.position = "None")
+
+
+ggplot(data = fika_mean_cc_tom, 
+       mapping = aes(x = time)) + 
+  geom_density(color="darkred", 
+               fill="chocolate") +
+  labs(x = "Time, in sec", 
+       y = NULL, 
+       title = "Dissolving mean density plot for Choco-cookie batches", 
+       caption = "* performed by Tom Hoffman", 
+       size = NULL) +
+  geom_point(data = test_cook_mean, 
+             mapping = aes(x = test_cook_mean$time, y = 0), 
+             shape = 21,
+             colour = "darkred", 
+             fill = "chocolate",
+             size = 5, 
+             stroke = 1.5) +
+  annotate("text", 
+           x = test_cook_mean$time, 
+           y = 0.02, 
+           label = "Test choco cookie", 
+           fontface="italic") +
+  theme(legend.position = "None")
+```
+
+
+```{r Bob, figures-side, fig.show="hold", out.width="50%"}
+ggplot(data = fika_mean_cc_bob,
+       mapping = aes(x = time)) + 
+  geom_histogram(color="darkred", 
+                 fill="chocolate") +
+  labs(x = "Time, in sec", 
+       y = NULL, 
+       title = "Dissolving means of Choco-cookie batches", 
+       caption = "* performed by Bob", 
+       size = NULL) +
+  geom_point(data = test_cook_mean, 
+             mapping = aes(x = test_cook_mean$time, y = 0), 
+             shape = 21, colour = "darkred", 
+             fill = "chocolate", 
+             size = 5, 
+             stroke = 1.5) +
+  annotate("text", 
+           x = test_cook_mean$time, 
+           y = 0.1, 
+           label = "Test choco cookie", 
+           fontface="italic") +
+  theme(legend.position = "None") +
+  scale_y_continuous(breaks = 1)
+
+
+ggplot(data = fika_mean_cc_bob, 
+       mapping = aes(x = time)) + 
+  geom_density(color="darkred", 
+               fill="chocolate") +
+  labs(x = "Time, in sec", 
+       y = NULL,
+       title = "Dissolving mean density plot for Choco-cookie batches", 
+       caption = "* performed by Bob", 
+       size = NULL) +
+  geom_point(data = test_cook_mean, 
+             mapping = aes(x = test_cook_mean$time, y = 0), 
+             shape = 21, 
+             colour = "darkred",
+             fill = "chocolate", 
+             size = 5, 
+             stroke = 1.5) +
+  annotate("text",
+           x = test_cook_mean$time, 
+           y = 0.02, 
+           label = "Test choco cookie",
+           fontface="italic") +
+  theme(legend.position = "None") 
+```
+
+
+From the histograms and the density plots above we see that on average cookies which are made by Tom dissolving at 7 seconds. While, cookies made by Bob dissolve on average at 5.2 seconds. 
+
+Thus, we reject our first null-hypothesis: *Cookie dissolving time in milk is not affected by whom the cookies are made.* Now we know that **there is a difference** between the bakers. 
+
+Our **conclusion** here would be: Bob needs to get a training from Tom on how to make cookies. 
+
+
+#### Temperature 
+
+We also wanted to know if dissolving time is affected by the local temperature. 
+
+From the plot below we see that the dissolving time increases at lower temperatures. 
+Could it be that on a colder day, the milk is also cooler and thus it takes more time for cookies to dissolve? 
+
+Indeed, the trend is interesting, but the data is limited. Because of that we cannot accept or reject our second null-hypothesis (*Cookies dissolving time in the milk is not affected by the local temperature*). 
+
+```{r}
+# df to look at the relation between the weather and the dissolving time of the chocolate cookies in milk
+fika_long_date_chr <- fika_long %>% 
+    mutate(date = as.character(date))
+
+lund_weather_df_chr <- lund_weather_df %>% 
+  mutate(date = as.character(date))
+
+fika_temperature_joined <-  left_join(fika_long_date_chr, lund_weather_df_chr, by = "date") %>% 
+  mutate(temperature = as.numeric(temperature)) %>% 
+  filter(stats == "Mean", 
+         dissolving_in == "milk") %>% 
+  drop_na(temperature)
+
+ggplot(data = fika_temperature_joined,
+       mapping = aes(x = date, 
+                     y = temperature, 
+                     size = time)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 90)) + 
+  scale_radius("time") + 
+  labs(x = "Date", 
+       y = "Temperature, C",
+       caption = "No separation by whom, Bob or Tom, the test was perfomed.", 
+       size = "Mean time, in sec.") +
+  ggtitle("Chocolate cookie mean dissolving times in milk in respect to\nthe temperature of the date the measurments were performed")
+```
+
+
+## General data overview
+
+#### CVs of other time parameters
+
+To make use of other data available we calculate and plot CV values. 
+CV is a variation metric, that is calculated as *st.dev / mean* for a respective time parameter. A lower CV value represents a lower variation within the batch.   
+
+
+```{r}
+fika_with_CV <- fika_long %>% pivot_wider(names_from = stats, 
+                                          values_from = time) %>% 
+  mutate(CV =  round( st_dev / Mean , 2)) %>%
+  pivot_longer(cols = c(Mean, st_dev, CV), names_to = "stats", values_to = "time") %>% 
+  filter(stats == "CV")
+```
+
+
+```{r}
+ggplot(data = fika_with_CV,
+       mapping = aes(x = batch_id, 
+                     y = time)) + 
+  geom_point(aes(color = cookie_type)) + 
+  theme(axis.text.x = element_blank()) + 
+  labs(x = "Batch ID",
+       y = "CV, %", 
+       title = "CVs for all batches over different time parameters", 
+       color = "cookie type") + 
+  scale_y_continuous(labels = scales::percent) + 
+  geom_smooth(aes(group = stats), color = "firebrick1") +
+  facet_wrap(~ dissolving_in, 
+             nrow = 3) +
+  geom_text_repel(aes(label = batch_id), 
+                  size = 2.5) + 
+  scale_color_manual(breaks = c("Choco-cookie", 
+                                "Oat", 
+                                "Cherry"),
+                        values=c("chocolate", 
+                                 "wheat3", 
+                                 "firebrick1"))
+```
