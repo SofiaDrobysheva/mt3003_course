@@ -8,4 +8,4 @@ Here I used randomly generated data to perform the data analysis. I pretend that
 
 Follow this link to see the final .rmd file output in an html format.
 
-http://htmlpreview.github.io/?https://github.com/SofiaDrobysheva/mt3003_course_R/blob/main/final_proj.html
+http://htmlpreview.github.io/?https://github.com/SofiaDrobysheva/mt3003_course/blob/main/final_proj_fika.html
